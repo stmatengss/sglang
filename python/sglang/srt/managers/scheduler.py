@@ -761,6 +761,11 @@ class Scheduler(
         self.forward_sleep_time = None
         self._engine_paused = False
 
+        # Agent-aware workflow tracking
+        from sglang.srt.mem_cache.agent_step_graph import AgentStepGraph
+
+        self.agent_step_graph = AgentStepGraph()
+
     def init_chunked_prefill(self):
         # Init chunked prefill
         self.chunked_prefill_size = self.server_args.chunked_prefill_size
@@ -1533,8 +1538,12 @@ class Scheduler(
                 http_worker_ipc=recv_req.http_worker_ipc,
                 dllm_config=self.dllm_config,
                 time_stats=recv_req.time_stats,
+                agent_hints=getattr(recv_req, 'agent_hints', None),
             )
             req.tokenizer = self.tokenizer
+
+            # Register agent workflow step if agent_hints are present
+            self.agent_step_graph.register_from_req(req)
 
             if self.disaggregation_mode != DisaggregationMode.NULL:
                 # Invalid request for disaggregated mode
