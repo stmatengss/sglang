@@ -298,12 +298,20 @@ class MooncakeConnector:
         buffers = _kv_buffers(self.kvcache)
         device = buffers[0].device if buffers else torch.device("cpu")
         count = torch.tensor([value], dtype=torch.int64, device=device)
-        try:
-            import torch.distributed as dist
+        import torch.distributed as dist
 
+        # GroupCoordinator.all_reduce only implements SUM.  A Mooncake lookup
+        # needs the common prefix present on every TP rank, so issue MIN on the
+        # coordinator's underlying process group instead.
+        if hasattr(self.tp_group, "device_group"):
+            dist.all_reduce(
+                count, op=dist.ReduceOp.MIN, group=self.tp_group.device_group
+            )
+            reduced = count
+        else:
+            # Kept for lightweight connector implementations used by tests and
+            # external integrations.
             reduced = self.tp_group.all_reduce(count, op=dist.ReduceOp.MIN)
-        except TypeError:
-            reduced = self.tp_group.all_reduce(count)
         if isinstance(reduced, torch.Tensor):
             count = reduced
         agreed = int(count.item())
