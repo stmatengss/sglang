@@ -2798,6 +2798,8 @@ class ServerArgs:
         # _handle_model_specific_adjustments never runs.
         self._resolved_overrides = []
 
+        self._validate_mooncake_radix_cache()
+
         if self.model_path.lower() in ["none", "dummy"]:
             return
 
@@ -2954,6 +2956,38 @@ class ServerArgs:
         from sglang.srt.arg_groups.overrides import materialize_declarations
 
         materialize_declarations(self)
+
+    def _validate_mooncake_radix_cache(self):
+        """Reject modes unsupported by the direct Mooncake radix backend."""
+        if self.radix_cache_backend != "mooncake":
+            return
+
+        incompatible_options = (
+            (
+                self.enable_hierarchical_cache,
+                "--enable-hierarchical-cache",
+            ),
+            (self.enable_flexkv, "--enable-flexkv"),
+            (self.enable_lmcache, "--enable-lmcache"),
+            (self.pp_size > 1, "--pp-size > 1"),
+            (self.attn_cp_size > 1, "--attn-cp-size > 1"),
+            (
+                self.disaggregation_mode != "null",
+                "--disaggregation-mode other than null",
+            ),
+            (
+                self.speculative_algorithm is not None,
+                "speculative decoding",
+            ),
+            (self.disable_radix_cache, "--disable-radix-cache"),
+            (self.nnodes > 1, "multi-node execution (--nnodes > 1)"),
+        )
+        for enabled, option in incompatible_options:
+            if enabled:
+                raise ValueError(
+                    "--radix-cache-backend=mooncake is not compatible with "
+                    f"{option}."
+                )
 
     def _handle_model_capability_adjustments(self):
         if parse_connector_type(self.model_path) == ConnectorType.INSTANCE:

@@ -1,6 +1,36 @@
-# Mooncake as L3 KV Cache
+# Mooncake KV Cache Backends
 
-This document describes how to use Mooncake as the L3 KV cache for SGLang.
+SGLang supports two separate Mooncake integration modes. Choose exactly one:
+
+1. **HiCache L3 backend (legacy):**
+   `--enable-hierarchical-cache --hicache-storage-backend mooncake`. SGLang owns
+   the GPU L1 and host-memory L2 pools; Mooncake is the L3 storage backend.
+2. **Direct radix backend:** `--radix-cache-backend mooncake`. GPU KV pages move
+   directly between SGLang and Mooncake through multi-buffer I/O. No
+   `HostKVCache` or `HiCacheController` is created, and Mooncake owns DRAM/SSD
+   placement.
+
+The direct backend currently supports MHA and MLA models with single-node TP1
+or TP2 and an NHD KV layout. It does not support HiCache, FlexKV, LMCache,
+hybrid SWA/SSM models, speculative decoding, PP/CP/PD, or multi-node TP. These
+combinations are rejected during argument validation.
+
+Example direct-mode launch:
+
+```bash
+MOONCAKE_MASTER=127.0.0.1:50051 \
+MOONCAKE_PROTOCOL=tcp \
+MOONCAKE_TE_META_DATA_SERVER=http://127.0.0.1:8080/metadata \
+python -m sglang.launch_server \
+  --model-path MODEL \
+  --tp-size 2 \
+  --page-size 64 \
+  --radix-cache-backend mooncake
+```
+
+The remainder of this document describes Mooncake deployment and the legacy
+HiCache L3 configuration; the same Mooncake environment variables are reused
+by direct mode.
 
 Related documentation:
 * [Quick Start: SGLang HiCache with Mooncake Backend](https://kvcache-ai.github.io/Mooncake/getting_started/examples/sglang-integration/hicache-quick-start.html)

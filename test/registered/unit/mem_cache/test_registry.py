@@ -147,6 +147,33 @@ class TestCreateTreeCacheRouting(_RegistryIsolationMixin, CustomTestCase):
         self.assertIs(result, inner)
 
 
+class TestMooncakeBuiltinRegistration(_RegistryIsolationMixin, CustomTestCase):
+    def test_create_tree_cache_lazy_loads_mooncake_backend(self):
+        # Other collected test modules may import the Mooncake package before
+        # this test starts, so explicitly restore the pre-import condition.
+        _RADIX_CACHE_REGISTRY.pop("mooncake", None)
+        self.assertIsNone(get_radix_cache_factory("mooncake"))
+
+        fake_cache = MagicMock()
+        fake_cache.supports_streaming_session.return_value = True
+        fake_module = MagicMock()
+
+        def _side_effect_register(name):
+            if name == "sglang.srt.mem_cache.storage.mooncake_store":
+                register_radix_cache_backend(
+                    "mooncake", MagicMock(return_value=fake_cache)
+                )
+            return fake_module
+
+        with patch(
+            "importlib.import_module", side_effect=_side_effect_register
+        ) as import_mod:
+            result = create_tree_cache(_make_ctx(backend="mooncake"))
+
+        self.assertIs(result, fake_cache)
+        import_mod.assert_any_call("sglang.srt.mem_cache.storage.mooncake_store")
+
+
 class TestDefaultRadixCacheFactory(CustomTestCase):
     """Branch coverage for the built-in radix cache selection chain.
 

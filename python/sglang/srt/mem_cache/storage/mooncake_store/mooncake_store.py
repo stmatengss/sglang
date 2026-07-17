@@ -309,6 +309,136 @@ class MooncakeBaseStore:
                 f"Failed to register buffer to Mooncake Store, error code: {ret_code}"
             )
 
+    def check_server(self):
+        master_server_ip = self.config.master_server_address.split(":")[0]
+        segments_url = (
+            f"http://{master_server_ip}:"
+            f"{self.config.master_metrics_port}/get_all_segments"
+        )
+        start_time = time.perf_counter()
+        while time.perf_counter() - start_time < SETUP_TIMEOUT:
+            try:
+                response = requests.get(segments_url, timeout=3)
+            except Exception:
+                response = None
+            if response is not None and response.text:
+                logger.info("Mooncake store server started successfully.")
+                return
+            logger.info(
+                "waiting mooncake store server started, cost_time: %.2f seconds.",
+                time.perf_counter() - start_time,
+            )
+            time.sleep(3)
+        raise ValueError("Launch mooncake store server timeout")
+
+    def _setup_distributed_store(
+        self,
+        *,
+        storage_config: Any = None,
+        standalone_required_bytes: Optional[int] = None,
+    ) -> None:
+        """Set up a real or dummy Mooncake client from the shared config."""
+        tp_size = int(getattr(storage_config, "tp_size", 1))
+        tp_rank = int(getattr(storage_config, "tp_rank", 0))
+        per_tp_global_segment_size = self.config.global_segment_size // tp_size
+
+        if self.config.check_server:
+            self.check_server()
+
+        device_name = self.config.device_name
+        if device_name and device_name.strip().startswith("{"):
+            try:
+                device_config = json.loads(device_name)
+                device_name = device_config.get(
+                    tp_rank, device_config.get(str(tp_rank), "")
+                )
+            except (json.JSONDecodeError, AttributeError):
+                logger.warning("Failed to parse device_name as JSON: %s", device_name)
+                device_name = ""
+
+        if self.config.standalone_storage:
+            if standalone_required_bytes is None:
+                raise RuntimeError(
+                    "Mooncake standalone storage requires the registered buffer size"
+                )
+            ret_code = self.store.setup_dummy(
+                standalone_required_bytes,
+                DEFAULT_LOCAL_BUFFER_SIZE,
+                self.config.client_server_address,
+            )
+        else:
+            try:
+                from sglang.srt.distributed.parallel_state import (
+                    get_mooncake_transfer_engine,
+                )
+
+                self._shared_mooncake_transfer_engine = (
+                    get_mooncake_transfer_engine()
+                )
+            except Exception:
+                self._shared_mooncake_transfer_engine = None
+                logger.debug("Failed to reuse initialized mooncake transfer engine")
+
+            if (
+                self._shared_mooncake_transfer_engine is not None
+                and device_name
+                == self._shared_mooncake_transfer_engine.get_ib_device()
+                and self.config.metadata_server == "P2PHANDSHAKE"
+                and self.config.protocol == "rdma"
+            ):
+                client_hostname = (
+                    self._shared_mooncake_transfer_engine.get_session_id()
+                )
+                transfer_engine = self._shared_mooncake_transfer_engine.get_engine()
+                logger.info(
+                    "Reuse initialized mooncake transfer engine: %s",
+                    self._shared_mooncake_transfer_engine,
+                )
+            else:
+                client_hostname = self.config.local_hostname
+                transfer_engine = None
+
+            setup_kwargs = {}
+            if self.config.enable_ssd_offload:
+                setup_kwargs["enable_ssd_offload"] = True
+            if self.config.ssd_offload_path is not None:
+                setup_kwargs["ssd_offload_path"] = self.config.ssd_offload_path
+
+            while True:
+                try:
+                    ret_code = self.store.setup(
+                        client_hostname,
+                        self.config.metadata_server,
+                        per_tp_global_segment_size,
+                        DEFAULT_LOCAL_BUFFER_SIZE,
+                        self.config.protocol,
+                        device_name,
+                        self.config.master_server_address,
+                        transfer_engine,
+                        **setup_kwargs,
+                    )
+                    break
+                except TypeError as exc:
+                    unsupported_kwargs = [
+                        key for key in list(setup_kwargs) if key in str(exc)
+                    ]
+                    if not unsupported_kwargs:
+                        raise
+                    logger.warning(
+                        "The installed Mooncake version does not support the %s "
+                        "parameter(s) in setup(). Retrying without them. Please "
+                        "upgrade Mooncake to enable SSD offload support.",
+                        ", ".join(unsupported_kwargs),
+                    )
+                    for key in unsupported_kwargs:
+                        setup_kwargs.pop(key, None)
+
+        if ret_code:
+            raise RuntimeError(
+                f"Failed to setup Mooncake store, error code: {ret_code}"
+            )
+        logger.info("Mooncake store setup successfully.")
+
 
 class MooncakeStore(HiCacheStorage, MooncakeBaseStore):
 
@@ -391,40 +521,13 @@ class MooncakeStore(HiCacheStorage, MooncakeBaseStore):
                     "Mooncake package does not support ReplicateConfig.group_ids. "
                     "Falling back to the existing batch_put_from path."
                 )
-            tp_scale_factor = 1 if storage_config is None else storage_config.tp_size
-
-            per_tp_global_segment_size = (
-                self.config.global_segment_size // tp_scale_factor
-            )
-
             # Check if extra_backend_tag should be passed to MooncakeDistributedStore
             self.extra_backend_tag = None
             if extra_config and "extra_backend_tag" in extra_config:
                 self.extra_backend_tag = extra_config["extra_backend_tag"]
                 logger.info(f"Using extra_backend_tag: {self.extra_backend_tag}")
 
-            # Check server status
-            if self.config.check_server:
-                self.check_server()
-
-            # Handle JSON device_name configuration
-            device_name = self.config.device_name
-            if device_name and device_name.strip().startswith("{"):
-                try:
-                    device_config = json.loads(device_name)
-                    if storage_config and hasattr(storage_config, "tp_rank"):
-                        tp_rank = storage_config.tp_rank
-                        # Try both integer and string keys since JSON parsing may convert keys
-                        device_name = device_config.get(tp_rank, "")
-                        if not device_name:
-                            device_name = device_config.get(str(tp_rank), "")
-                    else:
-                        device_name = ""
-                except (json.JSONDecodeError, AttributeError):
-                    logger.warning(
-                        f"Failed to parse device_name as JSON: {device_name}"
-                    )
-                    device_name = ""
+            standalone_required_bytes = None
             if self.config.standalone_storage:
                 if not isinstance(mem_pool.allocator, MooncakeHostTensorAllocator):
                     raise RuntimeError(
@@ -432,84 +535,11 @@ class MooncakeStore(HiCacheStorage, MooncakeBaseStore):
                         "Please set standalone_storage=False "
                         "or upgrade Mooncake by 'pip install mooncake-transfer-engine --upgrade'."
                     )
-                required_bytes = self._standalone_required_bytes(mem_pool)
-                ret_code = self.store.setup_dummy(
-                    required_bytes,
-                    DEFAULT_LOCAL_BUFFER_SIZE,  # Zero copy interface does not need local buffer
-                    self.config.client_server_address,
-                )
-            else:
-                try:
-                    from sglang.srt.distributed.parallel_state import (
-                        get_mooncake_transfer_engine,
-                    )
-
-                    self._shared_mooncake_transfer_engine = (
-                        get_mooncake_transfer_engine()
-                    )
-                except Exception:
-                    self._shared_mooncake_transfer_engine = None
-                    logger.debug("Failed to reuse initialized mooncake transfer engine")
-
-                # Only reuse the shared MooncakeTransferEngine when its
-                # configuration matches the one used by MooncakeStore.
-                if (
-                    self._shared_mooncake_transfer_engine is not None
-                    and device_name
-                    == self._shared_mooncake_transfer_engine.get_ib_device()
-                    and self.config.metadata_server == "P2PHANDSHAKE"
-                    and self.config.protocol == "rdma"
-                ):
-                    client_hostname = (
-                        self._shared_mooncake_transfer_engine.get_session_id()
-                    )
-                    transfer_engine = self._shared_mooncake_transfer_engine.get_engine()
-                    logger.info(
-                        f"Reuse initialized mooncake transfer engine: {self._shared_mooncake_transfer_engine}"
-                    )
-                else:
-                    client_hostname = self.config.local_hostname
-                    transfer_engine = None
-
-                setup_kwargs = {}
-                if self.config.enable_ssd_offload:
-                    setup_kwargs["enable_ssd_offload"] = True
-                if self.config.ssd_offload_path is not None:
-                    setup_kwargs["ssd_offload_path"] = self.config.ssd_offload_path
-
-                while True:
-                    try:
-                        ret_code = self.store.setup(
-                            client_hostname,
-                            self.config.metadata_server,
-                            per_tp_global_segment_size,
-                            DEFAULT_LOCAL_BUFFER_SIZE,  # Zero copy interface does not need local buffer
-                            self.config.protocol,
-                            device_name,
-                            self.config.master_server_address,
-                            transfer_engine,
-                            **setup_kwargs,
-                        )
-                        break
-                    except TypeError as e:
-                        unsupported_kwargs = [
-                            key for key in list(setup_kwargs) if key in str(e)
-                        ]
-                        if not unsupported_kwargs:
-                            raise
-                        logger.warning(
-                            "The installed Mooncake version does not support the "
-                            f"{', '.join(unsupported_kwargs)} parameter(s) in setup(). "
-                            f"Retrying without {', '.join(unsupported_kwargs)}. "
-                            "Please upgrade Mooncake to enable SSD offload support."
-                        )
-                        for key in unsupported_kwargs:
-                            setup_kwargs.pop(key, None)
-            if ret_code:
-                raise RuntimeError(
-                    f"Failed to setup Mooncake store, error code: {ret_code}"
-                )
-            logger.info("Mooncake store setup successfully.")
+                standalone_required_bytes = self._standalone_required_bytes(mem_pool)
+            self._setup_distributed_store(
+                storage_config=storage_config,
+                standalone_required_bytes=standalone_required_bytes,
+            )
 
             self.local_rank = (
                 storage_config.tp_rank if storage_config is not None else 0

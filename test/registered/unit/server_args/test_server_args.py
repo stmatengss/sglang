@@ -59,6 +59,82 @@ class TestPrepareServerArgs(CustomTestCase):
             os.unlink(config_file)
 
 
+class TestMooncakeRadixCacheValidation(CustomTestCase):
+    def test_rejects_hierarchical_cache(self):
+        with self.assertRaisesRegex(ValueError, "hierarchical-cache"):
+            ServerArgs(
+                model_path="dummy",
+                radix_cache_backend="mooncake",
+                enable_hierarchical_cache=True,
+            )
+
+    def test_rejects_flexkv(self):
+        with self.assertRaisesRegex(ValueError, "enable-flexkv"):
+            ServerArgs(
+                model_path="dummy",
+                radix_cache_backend="mooncake",
+                enable_flexkv=True,
+            )
+
+    def test_rejects_lmcache(self):
+        with self.assertRaisesRegex(ValueError, "enable-lmcache"):
+            ServerArgs(
+                model_path="dummy",
+                radix_cache_backend="mooncake",
+                enable_lmcache=True,
+            )
+
+    def test_rejects_pipeline_parallelism(self):
+        with self.assertRaisesRegex(ValueError, "pp-size"):
+            ServerArgs(
+                model_path="dummy",
+                radix_cache_backend="mooncake",
+                pp_size=2,
+            )
+
+    def test_rejects_context_parallelism(self):
+        with self.assertRaisesRegex(ValueError, "attn-cp-size"):
+            ServerArgs(
+                model_path="dummy",
+                radix_cache_backend="mooncake",
+                attn_cp_size=2,
+            )
+
+    def test_rejects_disaggregation(self):
+        with self.assertRaisesRegex(ValueError, "disaggregation-mode"):
+            ServerArgs(
+                model_path="dummy",
+                radix_cache_backend="mooncake",
+                disaggregation_mode="prefill",
+            )
+
+    def test_rejects_speculative_decoding(self):
+        with self.assertRaisesRegex(ValueError, "speculative"):
+            ServerArgs(
+                model_path="dummy",
+                radix_cache_backend="mooncake",
+                speculative_algorithm="EAGLE",
+            )
+
+    def test_rejects_disabled_radix_cache(self):
+        with self.assertRaisesRegex(ValueError, "disable-radix-cache"):
+            ServerArgs(
+                model_path="dummy",
+                radix_cache_backend="mooncake",
+                disable_radix_cache=True,
+            )
+
+    def test_allows_single_node_tp1_and_tp2(self):
+        for tp_size in (1, 2):
+            with self.subTest(tp_size=tp_size):
+                args = ServerArgs(
+                    model_path="dummy",
+                    radix_cache_backend="mooncake",
+                    tp_size=tp_size,
+                )
+                self.assertEqual(args.tp_size, tp_size)
+
+
 class TestMambaCacheStochasticRounding(unittest.TestCase):
     def test_rejects_fp32_ssm_cache(self):
         server_args = ServerArgs(
