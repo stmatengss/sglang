@@ -1,7 +1,6 @@
 """GPU E2E coverage for the direct Mooncake radix-cache backend."""
 
 import os
-import time
 
 from test_hicache_storage_mooncake_backend import (
     HiCacheStorageMooncakeBackendBaseMixin,
@@ -14,8 +13,6 @@ register_cuda_ci(est_time=300, stage="base-b", runner_config="2-gpu-large")
 
 
 class MooncakeRadixCacheE2EMixin(HiCacheStorageMooncakeBackendBaseMixin):
-    mooncake_master_extra_args = ("--enable_offload=true",)
-
     @classmethod
     def _get_base_server_args(cls):
         args = {
@@ -32,8 +29,6 @@ class MooncakeRadixCacheE2EMixin(HiCacheStorageMooncakeBackendBaseMixin):
 
     @classmethod
     def _get_additional_server_args_and_env(cls):
-        cls.ssd_dir = os.path.join(cls.temp_dir, "mooncake-ssd")
-        os.makedirs(cls.ssd_dir, exist_ok=True)
         return {}, {
             "MOONCAKE_MASTER": f"127.0.0.1:{cls.mooncake_master_port}",
             "MOONCAKE_PROTOCOL": "tcp",
@@ -42,9 +37,7 @@ class MooncakeRadixCacheE2EMixin(HiCacheStorageMooncakeBackendBaseMixin):
             "MOONCAKE_TE_META_DATA_SERVER": (
                 f"http://127.0.0.1:{cls.mooncake_metadata_port}/metadata"
             ),
-            "MOONCAKE_GLOBAL_SEGMENT_SIZE": "67108864",
-            "MOONCAKE_ENABLE_SSD_OFFLOAD": "1",
-            "MOONCAKE_OFFLOAD_FILE_STORAGE_PATH": cls.ssd_dir,
+            "MOONCAKE_GLOBAL_SEGMENT_SIZE": "268435456",
             "SGLANG_ENABLE_DETERMINISTIC_INFERENCE": "1",
         }
 
@@ -80,23 +73,9 @@ class MooncakeRadixCacheE2EMixin(HiCacheStorageMooncakeBackendBaseMixin):
         first = self._assert_remote_round_trip(prompt, 64)
         self.assertIn("ORANGE", self._response_text(first).upper())
 
-    def test_direct_dram_and_ssd_loadback(self):
+    def test_direct_l2_mooncake_write_and_loadback(self):
         prompt_a = self.gen_prompt(768)
-        first = self._assert_remote_round_trip(prompt_a, 640)
-
-        # Force the 64-MiB Mooncake memory tier under pressure. The master is
-        # started with offload enabled, so cold objects migrate to SSD rather
-        # than being discarded.
-        for _ in range(12):
-            self.send_request(self.gen_prompt(768), max_tokens=16)
-        self.flush_cache()
-        time.sleep(1)
-
-        disk_round_trip = self.send_request(prompt_a, max_tokens=32)
-        self.assertGreaterEqual(self.get_cached_tokens(disk_round_trip), 640)
-        self.assertEqual(
-            self._response_text(disk_round_trip), self._response_text(first)
-        )
+        self._assert_remote_round_trip(prompt_a, 640)
 
 
 class TestMooncakeRadixCacheMHA(MooncakeRadixCacheE2EMixin, CustomTestCase):

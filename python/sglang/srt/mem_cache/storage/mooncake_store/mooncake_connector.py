@@ -5,7 +5,6 @@ import json
 import logging
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
-from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import torch
@@ -183,6 +182,81 @@ def _kv_buffers(kvcache) -> list[torch.Tensor]:
     return list(k_buffers) + list(v_buffers)
 
 
+def _setup_direct_store(base_store, tp_size: int, tp_rank: int) -> None:
+    """Set up the direct GPU client without changing the legacy HiCache store."""
+    from sglang.srt.mem_cache.storage.mooncake_store.mooncake_store import (
+        DEFAULT_LOCAL_BUFFER_SIZE,
+    )
+
+    config = base_store._load_config(None)
+    if config.standalone_storage:
+        raise ValueError(
+            "The direct Mooncake radix backend does not support standalone storage."
+        )
+
+    device_name = config.device_name
+    if device_name and device_name.strip().startswith("{"):
+        try:
+            devices = json.loads(device_name)
+            device_name = devices.get(tp_rank, devices.get(str(tp_rank), ""))
+        except (json.JSONDecodeError, AttributeError):
+            logger.warning("Failed to parse Mooncake device_name JSON: %s", device_name)
+            device_name = ""
+
+    try:
+        from sglang.srt.distributed.parallel_state import (
+            get_mooncake_transfer_engine,
+        )
+
+        shared_engine = get_mooncake_transfer_engine()
+    except Exception:
+        shared_engine = None
+
+    if (
+        shared_engine is not None
+        and device_name == shared_engine.get_ib_device()
+        and config.metadata_server == "P2PHANDSHAKE"
+        and config.protocol == "rdma"
+    ):
+        client_hostname = shared_engine.get_session_id()
+        transfer_engine = shared_engine.get_engine()
+    else:
+        client_hostname = config.local_hostname
+        transfer_engine = None
+
+    setup_kwargs = {}
+    if config.enable_ssd_offload:
+        setup_kwargs["enable_ssd_offload"] = True
+    if config.ssd_offload_path is not None:
+        setup_kwargs["ssd_offload_path"] = config.ssd_offload_path
+
+    while True:
+        try:
+            ret_code = base_store.store.setup(
+                client_hostname,
+                config.metadata_server,
+                config.global_segment_size // tp_size,
+                DEFAULT_LOCAL_BUFFER_SIZE,
+                config.protocol,
+                device_name,
+                config.master_server_address,
+                transfer_engine,
+                **setup_kwargs,
+            )
+            break
+        except TypeError as exc:
+            unsupported = [key for key in setup_kwargs if key in str(exc)]
+            if not unsupported:
+                raise
+            for key in unsupported:
+                setup_kwargs.pop(key)
+
+    if ret_code:
+        raise RuntimeError(f"Failed to setup Mooncake store, error code: {ret_code}")
+    base_store.config = config
+    logger.info("Mooncake store setup successfully.")
+
+
 class MooncakeConnector:
     def __init__(
         self,
@@ -218,16 +292,7 @@ class MooncakeConnector:
 
         buffers = _kv_buffers(kvcache)
         if not _skip_setup:
-            self._base_store.config = self._base_store._load_config(None)
-            self._base_store._setup_distributed_store(
-                storage_config=SimpleNamespace(
-                    tp_size=self.tp_size,
-                    tp_rank=self.tp_rank,
-                ),
-                standalone_required_bytes=sum(
-                    buffer.untyped_storage().nbytes() for buffer in buffers
-                ),
-            )
+            _setup_direct_store(self._base_store, self.tp_size, self.tp_rank)
 
         self._registered_allocations: list[tuple[int, int]] = []
         seen_allocations: set[tuple[int, int]] = set()

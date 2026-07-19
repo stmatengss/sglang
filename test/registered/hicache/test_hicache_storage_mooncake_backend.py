@@ -30,8 +30,6 @@ class HiCacheStorageMooncakeBackendBaseMixin(HiCacheStorageBaseMixin):
     # Default port ranges for Mooncake services - can be overridden in subclasses
     mooncake_master_port_base = 50051
     mooncake_metadata_port_base = 8080
-    mooncake_master_extra_args = ()
-    mooncake_metadata_extra_args = ()
 
     @classmethod
     def setUpClass(cls):
@@ -77,7 +75,6 @@ class HiCacheStorageMooncakeBackendBaseMixin(HiCacheStorageBaseMixin):
                     "mooncake.http_metadata_server",
                     "--port",
                     str(cls.mooncake_metadata_port),
-                    *cls.mooncake_metadata_extra_args,
                 ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -94,12 +91,7 @@ class HiCacheStorageMooncakeBackendBaseMixin(HiCacheStorageBaseMixin):
         try:
             # Start master server with port configuration
             cls.master_service_process = subprocess.Popen(
-                [
-                    "mooncake_master",
-                    "--port",
-                    str(cls.mooncake_master_port),
-                    *cls.mooncake_master_extra_args,
-                ],
+                ["mooncake_master", "--port", str(cls.mooncake_master_port)],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 preexec_fn=os.setsid,  # Create new process group

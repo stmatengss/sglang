@@ -5,19 +5,6 @@ metatags:
 ---
 This document provides a comprehensive overview of SGLang HiCache, covering its system architecture, workflow and key components. It also details configuration parameters, optimization techniques, and integration with various L3 storage backends, serving as a complete reference for users and developers to understand and tune HiCache for efficient LLM inference.
 
-:::note Mooncake has two distinct modes
-`--enable-hierarchical-cache --hicache-storage-backend mooncake` selects the
-HiCache design documented on this page: SGLang owns GPU L1 and host L2, while
-Mooncake provides L3.
-
-`--radix-cache-backend mooncake` instead selects the direct Mooncake radix
-backend. It bypasses SGLang's host pool and transfers page-aligned GPU KV
-buffers directly to and from Mooncake, which owns DRAM/SSD placement. Direct
-mode currently supports MHA/MLA with single-node TP1/TP2; it is incompatible
-with HiCache, FlexKV, LMCache, hybrid SWA/SSM, speculative decoding, PP, CP,
-PD disaggregation, and multi-node TP.
-:::
-
 ## Why and What is HiCache?
 
 In large language model inference, the prefill phase is often time-consuming: input sequences need to be first converted into Key-Value cache (KV cache) for subsequent decoding. When multiple requests share the same prefix, the KV cache for that prefix is identical. By caching and reusing these shared KV caches, redundant computation can be avoided. To address this, SGLang introduced RadixAttention, which leverages idle GPU memory to cache and reuse prefix KV caches, and **HiCache**, which extends this idea to host memory and distributed storage.
