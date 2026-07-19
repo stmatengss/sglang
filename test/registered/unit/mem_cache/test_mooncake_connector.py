@@ -264,6 +264,22 @@ class TestMooncakeConnectorIO(CustomTestCase):
         self.assertEqual([len(x) for x in put_ptrs], [2, 2])
         self.assertEqual(get_sizes, put_sizes)
 
+    def test_l2_store_uses_mooncake_batch_put_directly(self):
+        store = _FakeMooncakeStore()
+        connector = self._make_connector(store=store)
+        self.addCleanup(connector.close)
+        key = RadixKey(array("q", [1, 2, 3, 4]))
+        slots = torch.tensor([2, 3, 4, 5])
+
+        self.assertTrue(connector.store_async("direct-l2", key, slots))
+        connector.wait_for_all_stores()
+
+        self.assertEqual(len(store.put_calls), 1)
+        page_keys, page_ptrs, page_sizes = store.put_calls[0]
+        self.assertEqual(len(page_keys), 2)
+        self.assertEqual([len(ptrs) for ptrs in page_ptrs], [2, 2])
+        self.assertEqual([len(sizes) for sizes in page_sizes], [2, 2])
+
     def test_partial_load_does_not_claim_later_pages(self):
         store = _FakeMooncakeStore()
         store.exists = [1, 1]

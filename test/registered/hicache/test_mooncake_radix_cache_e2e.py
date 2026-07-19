@@ -24,6 +24,7 @@ class MooncakeRadixCacheE2EMixin(HiCacheStorageMooncakeBackendBaseMixin):
             "--page-size": 64,
             "--mem-fraction-static": 0.6,
             "--enable-cache-report": True,
+            "--enable-deterministic-inference": True,
         }
         if backend := os.getenv("SGLANG_MOONCAKE_RADIX_ATTENTION_BACKEND"):
             args["--attention-backend"] = backend
@@ -58,8 +59,26 @@ class MooncakeRadixCacheE2EMixin(HiCacheStorageMooncakeBackendBaseMixin):
         self.flush_cache()
         second = self.send_request(prompt, max_tokens=32)
         self.assertGreaterEqual(self.get_cached_tokens(second), min_cached_tokens)
+        self.assertTrue(self._response_text(first).strip())
         self.assertEqual(self._response_text(second), self._response_text(first))
         return first
+
+    def test_chat_input_output_via_direct_l2_mooncake(self):
+        context = "You are a helpful assistant. " * 100
+        prompt = self.tokenizer.apply_chat_template(
+            [
+                {"role": "system", "content": context},
+                {
+                    "role": "user",
+                    "content": "Reply with exactly this word: ORANGE",
+                },
+            ],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+
+        first = self._assert_remote_round_trip(prompt, 64)
+        self.assertIn("ORANGE", self._response_text(first).upper())
 
     def test_direct_dram_and_ssd_loadback(self):
         prompt_a = self.gen_prompt(768)

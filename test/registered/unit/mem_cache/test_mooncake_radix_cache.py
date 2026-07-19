@@ -162,6 +162,33 @@ class TestMooncakeRadixLoadBack(CustomTestCase):
 
 
 class TestMooncakeRadixStoreLifecycle(CustomTestCase):
+    def test_finished_request_writes_directly_to_l2_mooncake(self):
+        cache, _ = _make_cache()
+        cache.req_to_token_pool = SimpleNamespace(
+            req_to_token=torch.tensor([[10, 11, 12, 13]])
+        )
+        req = SimpleNamespace(
+            rid="direct-l2",
+            kv_committed_len=4,
+            origin_input_ids=[1, 2, 3, 4],
+            output_ids=[],
+            extra_key=None,
+            req_pool_idx=0,
+            cache_protected_len=0,
+            last_node=cache.root_node,
+            priority=0,
+            pop_committed_kv_cache=MagicMock(return_value=4),
+        )
+
+        cache.cache_finished_req(req)
+
+        self.assertFalse(hasattr(cache, "cache_controller"))
+        self.assertEqual(len(cache.mooncake_connector.store_calls), 1)
+        rid, key, slots = cache.mooncake_connector.store_calls[0]
+        self.assertEqual(rid, "direct-l2")
+        self.assertEqual(key.raw_token_ids(), [1, 2, 3, 4])
+        self.assertEqual(slots.tolist(), [10, 11, 12, 13])
+
     def test_store_completion_unlocks_source_once(self):
         cache, _ = _make_cache()
         cache.req_to_token_pool = SimpleNamespace(
