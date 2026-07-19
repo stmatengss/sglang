@@ -180,7 +180,7 @@ class TestMooncakeRadixStoreLifecycle(CustomTestCase):
             pop_committed_kv_cache=MagicMock(return_value=4),
         )
 
-        cache.cache_finished_req(req)
+        cache.cache_finished_req(req, kv_len_to_handle=4)
 
         self.assertFalse(hasattr(cache, "cache_controller"))
         self.assertEqual(len(cache.mooncake_connector.store_calls), 1)
@@ -206,7 +206,7 @@ class TestMooncakeRadixStoreLifecycle(CustomTestCase):
             priority=0,
             pop_committed_kv_cache=MagicMock(return_value=4),
         )
-        cache.cache_finished_req(req)
+        cache.cache_finished_req(req, kv_len_to_handle=4)
         node = cache._inflight_store_nodes["r"]
         self.assertEqual(node.lock_ref, 1)
         cache.mooncake_connector.completed = ["r"]

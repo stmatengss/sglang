@@ -162,14 +162,18 @@ class MooncakeRadixCache(RadixCache):
         self._record_store_event(new_node)
         return fetched_slots, new_node
 
-    def cache_finished_req(self, req: Req, is_insert: bool = True) -> None:
+    def cache_finished_req(
+        self, req: Req, is_insert: bool = True, *, kv_len_to_handle: int
+    ) -> None:
         if not is_insert:
-            super().cache_finished_req(req, is_insert=False)
+            super().cache_finished_req(
+                req, is_insert=False, kv_len_to_handle=kv_len_to_handle
+            )
             self._load_markers.pop(req.rid, None)
             self.mooncake_connector.release(req.rid)
             return
 
-        committed_len = int(req.kv_committed_len)
+        committed_len = int(kv_len_to_handle)
         token_ids = (req.origin_input_ids + req.output_ids)[:committed_len]
         radix_key = RadixKey(
             token_ids, req.extra_key, is_bigram=self.is_eagle
@@ -178,7 +182,9 @@ class MooncakeRadixCache(RadixCache):
             req.req_pool_idx, : len(radix_key)
         ].to(dtype=torch.int64, copy=True)
 
-        super().cache_finished_req(req, is_insert=True)
+        super().cache_finished_req(
+            req, is_insert=True, kv_len_to_handle=kv_len_to_handle
+        )
         self._load_markers.pop(req.rid, None)
         if len(radix_key) == 0:
             return
