@@ -36,6 +36,45 @@ For deploying PD disaggregation at scale with load balancing and fault tolerance
 uv pip install mooncake-transfer-engine
 ```
 
+### Transfer protocols
+
+Mooncake Transfer Engine supports multiple transports. SGLang exposes them as `mooncake_<protocol>` backend aliases and as per-path options so KV cache, auxiliary metadata, extra state, and staging transfers can use different transports.
+
+Supported protocols: `rdma`, `tcp`, `efa`, `nvlink`, `nvlink_intra`, `hip`, `barex`, `ascend`, `musa`, `cxl`, `nvmeof`, `tpu`, `mpcomm`.
+
+```bash
+# Engine-wide TCP (equivalent to the mooncake_tcp alias)
+python -m sglang.launch_server ... \
+  --disaggregation-mode prefill \
+  --disaggregation-transfer-backend mooncake \
+  --disaggregation-mooncake-protocol tcp
+
+# Same selection via backend alias
+python -m sglang.launch_server ... \
+  --disaggregation-mode prefill \
+  --disaggregation-transfer-backend mooncake_efa
+
+# Mixed paths (requires Mooncake TENT: export MC_USE_TENT=1)
+python -m sglang.launch_server ... \
+  --disaggregation-mode prefill \
+  --disaggregation-transfer-backend mooncake \
+  --disaggregation-mooncake-protocol rdma \
+  --disaggregation-mooncake-kv-protocol rdma \
+  --disaggregation-mooncake-aux-protocol tcp \
+  --disaggregation-mooncake-state-protocol rdma \
+  --disaggregation-mooncake-staging-protocol nvlink
+```
+
+| Flag | Path | Default |
+| --- | --- | --- |
+| `--disaggregation-mooncake-protocol` | Engine-wide default, also the fallback `transport_hint` | `MOONCAKE_PROTOCOL` env (`rdma`) |
+| `--disaggregation-mooncake-kv-protocol` | KV cache | engine-wide protocol |
+| `--disaggregation-mooncake-aux-protocol` | Auxiliary metadata | engine-wide protocol |
+| `--disaggregation-mooncake-state-protocol` | Extra state (Mamba, indexer, ...) | engine-wide protocol |
+| `--disaggregation-mooncake-staging-protocol` | Staging-buffer bulk copy | engine-wide protocol |
+
+Per-path values are passed to Mooncake as TENT `transport_hint`. On the classic engine they are ignored except `aux=tcp`, which falls back to ZMQ TCP. `mooncake_tcp` remains a supported alias and still forces TCP without RDMA HCA selection.
+
 ### IB Device Configuration
 
 `--disaggregation-ib-device` supports the following formats when using the Mooncake backend:

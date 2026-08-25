@@ -43,6 +43,9 @@ from sglang.srt.arg_groups.argparse_actions import (
 )
 from sglang.srt.configs.linear_attn_model_registry import get_linear_attn_spec_by_arch
 from sglang.srt.connector import ConnectorType
+from sglang.srt.disaggregation.mooncake.protocol import (
+    MOONCAKE_TRANSFER_PROTOCOL_CHOICES,
+)
 from sglang.srt.distributed.device_communicators.mooncake_transfer_engine import (
     parse_ib_device_config,
 )
@@ -235,7 +238,7 @@ DISAGG_TRANSFER_BACKEND_CHOICES = [
     "ascend",
     "fake",
     "mori",
-    "mooncake_tcp",
+    *[f"mooncake_{protocol}" for protocol in MOONCAKE_TRANSFER_PROTOCOL_CHOICES],
 ]
 
 GRAMMAR_BACKEND_CHOICES = ["xgrammar", "outlines", "llguidance", "none"]
@@ -963,7 +966,7 @@ class ServerArgs:
     # Split DSA GPU KV/indexer cache layers across CP ranks.
     enable_dsa_cache_layer_split: A[
         bool,
-        "Split DSA (DeepSeek Sparse Attention) GPU KV/indexer cache layers across context-parallel ranks to reduce per-rank KV memory. Currently only supported with the mooncake transfer backend (mooncake / mooncake_tcp); mori/nixl support will be added later by the community.",
+        "Split DSA (DeepSeek Sparse Attention) GPU KV/indexer cache layers across context-parallel ranks to reduce per-rank KV memory. Currently only supported with the mooncake transfer backend (mooncake / mooncake_<protocol>); mori/nixl support will be added later by the community.",
     ] = False
     enable_dsa_prefill_context_parallel: A[bool, Arg(no_cli=True)] = False
     dsa_prefill_cp_mode: A[str, Arg(no_cli=True)] = "round-robin-split"
@@ -2480,7 +2483,12 @@ class ServerArgs:
     disaggregation_transfer_backend: A[
         str,
         Arg(
-            help="The backend for disaggregation transfer. Default is mooncake.",
+            help=(
+                "The backend for disaggregation transfer. Default is mooncake. "
+                "Mooncake transports can also be selected via mooncake_<protocol> "
+                "aliases (e.g. mooncake_tcp, mooncake_efa, mooncake_nvlink) or "
+                "--disaggregation-mooncake-protocol."
+            ),
             choices=DISAGG_TRANSFER_BACKEND_CHOICES,
         ),
     ] = "mooncake"
@@ -2491,6 +2499,61 @@ class ServerArgs:
     disaggregation_ib_device: A[
         Optional[str],
         'The InfiniBand devices for disaggregation transfer. Supports a single device (e.g., --disaggregation-ib-device mlx5_0), a shared comma-separated list (e.g., --disaggregation-ib-device mlx5_0,mlx5_1), a per-GPU JSON mapping (e.g., --disaggregation-ib-device \'{"0": "mlx5_0,mlx5_1", "1": "mlx5_2"}\'), or a path to a JSON file containing that mapping. Default is None, which triggers automatic device detection when mooncake backend is enabled.',
+    ] = None
+    disaggregation_mooncake_protocol: A[
+        Optional[str],
+        Arg(
+            help=(
+                "Engine-wide Mooncake transport for PD KV transfer. Also used as "
+                "the default TENT transport_hint for paths that do not set a "
+                "per-path override. Supported: "
+                + ", ".join(MOONCAKE_TRANSFER_PROTOCOL_CHOICES)
+                + ". Default: MOONCAKE_PROTOCOL env (rdma)."
+            ),
+            choices=list(MOONCAKE_TRANSFER_PROTOCOL_CHOICES),
+        ),
+    ] = None
+    disaggregation_mooncake_kv_protocol: A[
+        Optional[str],
+        Arg(
+            help=(
+                "Mooncake transport for PD KV-cache transfers. Default: "
+                "--disaggregation-mooncake-protocol. Mixed per-path transports "
+                "require Mooncake TENT (MC_USE_TENT=1)."
+            ),
+            choices=list(MOONCAKE_TRANSFER_PROTOCOL_CHOICES),
+        ),
+    ] = None
+    disaggregation_mooncake_aux_protocol: A[
+        Optional[str],
+        Arg(
+            help=(
+                "Mooncake transport for PD auxiliary metadata transfers. "
+                "Default: --disaggregation-mooncake-protocol. 'tcp' uses "
+                "Mooncake TCP under TENT, and ZMQ TCP on the classic engine."
+            ),
+            choices=list(MOONCAKE_TRANSFER_PROTOCOL_CHOICES),
+        ),
+    ] = None
+    disaggregation_mooncake_state_protocol: A[
+        Optional[str],
+        Arg(
+            help=(
+                "Mooncake transport for PD extra-state transfers (Mamba, "
+                "indexer, etc.). Default: --disaggregation-mooncake-protocol."
+            ),
+            choices=list(MOONCAKE_TRANSFER_PROTOCOL_CHOICES),
+        ),
+    ] = None
+    disaggregation_mooncake_staging_protocol: A[
+        Optional[str],
+        Arg(
+            help=(
+                "Mooncake transport for PD staging-buffer bulk transfers. "
+                "Default: --disaggregation-mooncake-protocol."
+            ),
+            choices=list(MOONCAKE_TRANSFER_PROTOCOL_CHOICES),
+        ),
     ] = None
     disaggregation_decode_enable_radix_cache: A[
         bool,
@@ -4380,7 +4443,7 @@ class ServerArgs:
                 ):
                     raise ValueError(
                         "--enable-dsa-cache-layer-split currently only supports "
-                        "the mooncake transfer backend (mooncake / mooncake_tcp). "
+                        "the mooncake transfer backend (mooncake / mooncake_<protocol>). "
                         f"Got --disaggregation-transfer-backend "
                         f"{self.disaggregation_transfer_backend!r}. mori/nixl "
                         "support will be added later by the community."

@@ -36,6 +36,7 @@ from sglang.srt.disaggregation.common.utils import (
     pack_int_lists,
     unpack_int_lists,
 )
+from sglang.srt.disaggregation.mooncake.protocol import resolve_path_transport_hint
 from sglang.srt.disaggregation.mooncake.utils import (
     check_mooncake_custom_mem_pool_enabled,
 )
@@ -240,6 +241,33 @@ class MooncakeKVManager(CommonKVManager):
 
     def init_engine(self):
         self.engine = get_mooncake_transfer_engine()
+
+    def _path_transport_hint(self, path: str) -> str:
+        return resolve_path_transport_hint(self.server_args, path)
+
+    def _should_send_aux_via_zmq(self) -> bool:
+        # NVLink aux still goes over ZMQ TCP until Mooncake nvlink_transport is
+        # reliable for small CPU metadata. Classic (non-TENT) engines can only
+        # install one transport, so aux=tcp also uses the ZMQ path there.
+        if getattr(self, "enable_custom_mem_pool", False) and (
+            getattr(self, "custom_mem_pool_type", None) == "NVLINK"
+        ):
+            return True
+        if envs.SGLANG_MOONCAKE_SEND_AUX_TCP.get():
+            return True
+        aux_hint = self._path_transport_hint("aux")
+        engine_protocol = (
+            getattr(self.server_args, "disaggregation_mooncake_protocol", None) or ""
+        )
+        # Classic engines install one transport. Mix aux=tcp onto a non-TCP
+        # engine via ZMQ; a TCP engine can carry aux directly.
+        if (
+            aux_hint == "tcp"
+            and engine_protocol != "tcp"
+            and os.environ.get("MC_USE_TENT") != "1"
+        ):
+            return True
+        return False
 
     def register_buffer_to_engine(self):
         # Batch register KV data buffers
@@ -561,6 +589,7 @@ class MooncakeKVManager(CommonKVManager):
         ret = self._transfer_data(
             mooncake_session_id,
             [(staging_buffer.get_ptr(), dst_write_ptr, per_rank_bytes)],
+            transport_hint=self._path_transport_hint("staging"),
         )
         if ret != 0:
             raise RuntimeError(
@@ -571,13 +600,22 @@ class MooncakeKVManager(CommonKVManager):
             )
         return ret
 
-    def _transfer_data(self, mooncake_session_id, transfer_blocks):
+    def _transfer_data(
+        self,
+        mooncake_session_id,
+        transfer_blocks,
+        transport_hint: str = "",
+    ):
         if not transfer_blocks:
             return 0
 
         src_addrs, dst_addrs, lengths = zip(*transfer_blocks)
         return self.engine.batch_transfer_sync(
-            mooncake_session_id, list(src_addrs), list(dst_addrs), list(lengths)
+            mooncake_session_id,
+            list(src_addrs),
+            list(dst_addrs),
+            list(lengths),
+            transport_hint=transport_hint,
         )
 
     def _send_kvcache_generic(
@@ -591,6 +629,7 @@ class MooncakeKVManager(CommonKVManager):
         executor: concurrent.futures.ThreadPoolExecutor,
         state_type: Optional[StateType] = None,
         force_flat: bool = False,
+        transport_hint: str = "",
     ) -> int:
         """
         Generic KV cache transfer supporting both MHA and MLA architectures.
@@ -663,14 +702,18 @@ class MooncakeKVManager(CommonKVManager):
         # Worker function for processing a single layer
         def process_layer(src_ptr: int, dst_ptr: int, item_len: int) -> int:
             transfer_blocks = set_transfer_blocks(src_ptr, dst_ptr, item_len)
-            return self._transfer_data(mooncake_session_id, transfer_blocks)
+            return self._transfer_data(
+                mooncake_session_id, transfer_blocks, transport_hint=transport_hint
+            )
 
         # Worker function for processing all layers in a batch
         def process_layers(layers_params: List[Tuple[int, int, int]]) -> int:
             transfer_blocks = []
             for src_ptr, dst_ptr, item_len in layers_params:
                 transfer_blocks.extend(set_transfer_blocks(src_ptr, dst_ptr, item_len))
-            return self._transfer_data(mooncake_session_id, transfer_blocks)
+            return self._transfer_data(
+                mooncake_session_id, transfer_blocks, transport_hint=transport_hint
+            )
 
         if self.enable_custom_mem_pool:
             futures = [
@@ -710,6 +753,7 @@ class MooncakeKVManager(CommonKVManager):
             prefill_data_indices=prefill_kv_indices,
             dst_data_indices=dst_kv_indices,
             executor=executor,
+            transport_hint=self._path_transport_hint("kv"),
         )
 
     def send_kvcache_slice(
@@ -818,7 +862,11 @@ class MooncakeKVManager(CommonKVManager):
             total_slices = len(src_addr_list)
             length_list = [heads_bytes_per_token_to_send] * total_slices
             return self.engine.batch_transfer_sync(
-                mooncake_session_id, src_addr_list, dst_addr_list, length_list
+                mooncake_session_id,
+                src_addr_list,
+                dst_addr_list,
+                length_list,
+                transport_hint=self._path_transport_hint("kv"),
             )
 
         futures = []
@@ -847,9 +895,7 @@ class MooncakeKVManager(CommonKVManager):
         dst_aux_ptrs: list[int],
     ):
         # TODO(shangming): Fix me when nvlink_transport of Mooncake is bug-free
-        if (
-            self.enable_custom_mem_pool and self.custom_mem_pool_type == "NVLINK"
-        ) or envs.SGLANG_MOONCAKE_SEND_AUX_TCP.get():
+        if self._should_send_aux_via_zmq():
             return self.send_aux_tcp(req, prefill_aux_index, dst_aux_ptrs)
 
         transfer_blocks = []
@@ -862,7 +908,11 @@ class MooncakeKVManager(CommonKVManager):
             dst_addr = dst_aux_ptrs[i] + length * req.dst_aux_index
             transfer_blocks.append((src_addr, dst_addr, length))
 
-        return self._transfer_data(req.mooncake_session_id, transfer_blocks)
+        return self._transfer_data(
+            req.mooncake_session_id,
+            transfer_blocks,
+            transport_hint=self._path_transport_hint("aux"),
+        )
 
     def send_aux_tcp(
         self,
@@ -1090,6 +1140,7 @@ class MooncakeKVManager(CommonKVManager):
                         dst_data_indices=np.array(dst_indices_local, dtype=np.int32),
                         executor=executor,
                         state_type=st,
+                        transport_hint=self._path_transport_hint("state"),
                     )
                     or rc
                 )
@@ -1125,6 +1176,7 @@ class MooncakeKVManager(CommonKVManager):
                         dst_data_indices=np.array(dst_indices_local, dtype=np.int32),
                         executor=executor,
                         force_flat=True,
+                        transport_hint=self._path_transport_hint("state"),
                     )
                     or rc
                 )
@@ -1148,7 +1200,11 @@ class MooncakeKVManager(CommonKVManager):
             dst_addr = dst_state_ptr + length * int(dst_mamba_index[0])
             transfer_blocks.append((src_addr, dst_addr, length))
 
-        return self._transfer_data(req.mooncake_session_id, transfer_blocks)
+        return self._transfer_data(
+            req.mooncake_session_id,
+            transfer_blocks,
+            transport_hint=self._path_transport_hint("state"),
+        )
 
     def _send_mamba_state_slice(
         self,
@@ -1246,7 +1302,11 @@ class MooncakeKVManager(CommonKVManager):
 
                 transfer_blocks.append((src_addr, dst_addr, bytes_to_send))
 
-        return self._transfer_data(req.mooncake_session_id, transfer_blocks)
+        return self._transfer_data(
+            req.mooncake_session_id,
+            transfer_blocks,
+            transport_hint=self._path_transport_hint("state"),
+        )
 
     def sync_status_to_decode_endpoint(
         self, remote: str, dst_port: int, room: int, status: int, prefill_rank: int

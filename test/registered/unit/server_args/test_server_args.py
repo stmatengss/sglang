@@ -222,14 +222,27 @@ class TestLoadBalanceMethod(unittest.TestCase):
         )
 
     def test_pd_decode_radix_cache_allows_mooncake_tcp(self):
-        server_args = self._load_balance_args(
-            disaggregation_mode="decode",
-            disaggregation_decode_enable_radix_cache=True,
-            disaggregation_transfer_backend="mooncake_tcp",
-        )
+        saved_tcp = os.environ.get("MC_FORCE_TCP")
+        saved_protocol = os.environ.get("MOONCAKE_PROTOCOL")
+        try:
+            server_args = self._load_balance_args(
+                disaggregation_mode="decode",
+                disaggregation_decode_enable_radix_cache=True,
+                disaggregation_transfer_backend="mooncake_tcp",
+            )
 
-        self.assertFalse(server_args.disable_radix_cache)
-        self.assertEqual(server_args.disaggregation_transfer_backend, "mooncake")
+            self.assertFalse(server_args.disable_radix_cache)
+            self.assertEqual(server_args.disaggregation_transfer_backend, "mooncake")
+            self.assertEqual(server_args.disaggregation_mooncake_protocol, "tcp")
+        finally:
+            if saved_tcp is None:
+                os.environ.pop("MC_FORCE_TCP", None)
+            else:
+                os.environ["MC_FORCE_TCP"] = saved_tcp
+            if saved_protocol is None:
+                os.environ.pop("MOONCAKE_PROTOCOL", None)
+            else:
+                os.environ["MOONCAKE_PROTOCOL"] = saved_protocol
 
 
 class TestSkipTokenizerInit(unittest.TestCase):

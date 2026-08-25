@@ -5,7 +5,12 @@ import logging
 import os
 from typing import TYPE_CHECKING, Dict, List, Optional, Union
 
+from sglang.srt.disaggregation.mooncake.protocol import (
+    is_mooncake_backend,
+    protocol_clears_ib_device,
+)
 from sglang.srt.environ import envs
+from sglang.srt.utils.common import print_warning_once
 from sglang.srt.utils.network import NetworkAddress, get_free_port, get_local_ip_auto
 
 if TYPE_CHECKING:
@@ -101,6 +106,25 @@ def get_ib_devices_for_gpu(ib_device_str: Optional[str], gpu_id: int) -> Optiona
     )
 
 
+def _call_with_transport_hint(fn, *args, transport_hint: str = ""):
+    """Invoke a Mooncake transfer API, passing transport_hint when supported.
+
+    Older mooncake-transfer-engine builds reject the kwarg. Fall back to the
+    positional signature and warn once so mixed-path configs still run.
+    """
+    if not transport_hint:
+        return fn(*args)
+    try:
+        return fn(*args, transport_hint=transport_hint)
+    except TypeError:
+        print_warning_once(
+            "Mooncake TransferEngine does not accept transport_hint; "
+            "upgrade mooncake-transfer-engine for per-path protocol selection. "
+            f"Ignoring hint {transport_hint!r}."
+        )
+        return fn(*args)
+
+
 class MooncakeTransferEngine:
     """Shared Mooncake transfer engine for RDMA/transfer operations."""
 
@@ -122,9 +146,8 @@ class MooncakeTransferEngine:
         self.engine = TransferEngine()
         self.hostname = hostname
         self.gpu_id = gpu_id if gpu_id is not None else 0
-        # MC_FORCE_TCP=1 makes mooncake install TcpTransport instead of RDMA,
-        # in which case RDMA HCA selection is irrelevant; pass empty device.
-        if os.environ.get("MC_FORCE_TCP") == "1":
+        # TCP / NVLink / HIP / ... do not use an RDMA HCA; pass empty device.
+        if protocol_clears_ib_device(envs.MOONCAKE_PROTOCOL.get()):
             self.ib_device = ""
         else:
             self.ib_device = get_ib_devices_for_gpu(ib_device, self.gpu_id)
@@ -213,12 +236,22 @@ class MooncakeTransferEngine:
             raise RuntimeError("Mooncake Transfer Engine initialization failed.")
 
     def transfer_sync(
-        self, session_id: str, buffer: int, peer_buffer_address: int, length: int
+        self,
+        session_id: str,
+        buffer: int,
+        peer_buffer_address: int,
+        length: int,
+        transport_hint: str = "",
     ) -> int:
         """Synchronously transfer data to the specified address."""
         try:
-            ret = self.engine.transfer_sync_write(
-                session_id, buffer, peer_buffer_address, length
+            ret = _call_with_transport_hint(
+                self.engine.transfer_sync_write,
+                session_id,
+                buffer,
+                peer_buffer_address,
+                length,
+                transport_hint=transport_hint,
             )
         except Exception:
             ret = -1
@@ -239,11 +272,17 @@ class MooncakeTransferEngine:
         buffers: List[int],
         peer_buffer_addresses: List[int],
         lengths: List[int],
+        transport_hint: str = "",
     ) -> int:
         """Synchronously transfer data to the specified addresses in batches."""
         try:
-            ret = self.engine.batch_transfer_sync_write(
-                session_id, buffers, peer_buffer_addresses, lengths
+            ret = _call_with_transport_hint(
+                self.engine.batch_transfer_sync_write,
+                session_id,
+                buffers,
+                peer_buffer_addresses,
+                lengths,
+                transport_hint=transport_hint,
             )
         except Exception:
             ret = -1
@@ -314,7 +353,7 @@ def maybe_init_shared_mooncake_transfer_engine(
     use_mooncake_te = (
         (
             server_args.disaggregation_mode != "null"
-            and server_args.disaggregation_transfer_backend == "mooncake"
+            and is_mooncake_backend(server_args.disaggregation_transfer_backend)
         )
         or (
             server_args.enable_hierarchical_cache

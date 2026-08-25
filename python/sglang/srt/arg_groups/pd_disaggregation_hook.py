@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import TYPE_CHECKING
 
+from sglang.srt.disaggregation.mooncake.protocol import (
+    apply_mooncake_protocol,
+    parse_mooncake_backend_alias,
+    validate_mooncake_protocol,
+)
 from sglang.srt.environ import envs
 
 if TYPE_CHECKING:
@@ -12,19 +16,60 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _normalize_mooncake_transfer_options(server_args: ServerArgs) -> None:
+    """Resolve mooncake_<protocol> aliases and per-path protocol flags."""
+    alias = parse_mooncake_backend_alias(server_args.disaggregation_transfer_backend)
+    if alias is not None:
+        if server_args.disaggregation_mooncake_protocol is None:
+            server_args.disaggregation_mooncake_protocol = alias
+        server_args.disaggregation_transfer_backend = "mooncake"
+        logger.info(
+            "disaggregation transfer backend 'mooncake_%s' -> mooncake "
+            "with protocol %s",
+            alias,
+            server_args.disaggregation_mooncake_protocol,
+        )
+
+    validate_mooncake_protocol(
+        server_args.disaggregation_mooncake_protocol,
+        "--disaggregation-mooncake-protocol",
+    )
+    validate_mooncake_protocol(
+        server_args.disaggregation_mooncake_kv_protocol,
+        "--disaggregation-mooncake-kv-protocol",
+    )
+    validate_mooncake_protocol(
+        server_args.disaggregation_mooncake_aux_protocol,
+        "--disaggregation-mooncake-aux-protocol",
+    )
+    validate_mooncake_protocol(
+        server_args.disaggregation_mooncake_state_protocol,
+        "--disaggregation-mooncake-state-protocol",
+    )
+    validate_mooncake_protocol(
+        server_args.disaggregation_mooncake_staging_protocol,
+        "--disaggregation-mooncake-staging-protocol",
+    )
+
+    using_mooncake_pd = (
+        server_args.disaggregation_mode in ("prefill", "decode")
+        and server_args.disaggregation_transfer_backend == "mooncake"
+    )
+    if not using_mooncake_pd:
+        return
+
+    protocol = server_args.disaggregation_mooncake_protocol
+    if protocol is None:
+        return
+
+    spec = apply_mooncake_protocol(protocol)
+    if spec.clear_ib_device:
+        server_args.disaggregation_ib_device = None
+
+
 def handle_pd_disaggregation(server_args: ServerArgs) -> None:
     """Validate and normalize PD-disaggregation server args."""
-    # "mooncake_tcp" is mooncake with the TCP transport forced: set MC_FORCE_TCP
-    # so mooncake installs TcpTransport instead of RDMA, rewrite the backend to
-    # mooncake, and skip RDMA HCA selection. Must run before backend-name checks.
-    if server_args.disaggregation_transfer_backend == "mooncake_tcp":
-        os.environ.setdefault("MC_FORCE_TCP", "1")
-        server_args.disaggregation_transfer_backend = "mooncake"
-        server_args.disaggregation_ib_device = None
-        logger.info(
-            "disaggregation transfer backend 'mooncake_tcp' -> mooncake "
-            "with MC_FORCE_TCP=1 (TCP transport, no RDMA)"
-        )
+    _normalize_mooncake_transfer_options(server_args)
 
     if server_args.disaggregation_mode == "decode":
         if server_args.disaggregation_decode_enable_radix_cache:
