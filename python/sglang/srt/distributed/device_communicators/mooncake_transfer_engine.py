@@ -10,7 +10,6 @@ from sglang.srt.disaggregation.mooncake.protocol import (
     protocol_clears_ib_device,
 )
 from sglang.srt.environ import envs
-from sglang.srt.utils.common import print_warning_once
 from sglang.srt.utils.network import NetworkAddress, get_free_port, get_local_ip_auto
 
 if TYPE_CHECKING:
@@ -104,25 +103,6 @@ def get_ib_devices_for_gpu(ib_device_str: Optional[str], gpu_id: int) -> Optiona
         f"No IB devices configured for GPU {gpu_id}. "
         f"Available GPUs: {list(parsed_config.keys())}"
     )
-
-
-def _call_with_transport_hint(fn, *args, transport_hint: str = ""):
-    """Invoke a Mooncake transfer API, passing transport_hint when supported.
-
-    Older mooncake-transfer-engine builds reject the kwarg. Fall back to the
-    positional signature and warn once so mixed-path configs still run.
-    """
-    if not transport_hint:
-        return fn(*args)
-    try:
-        return fn(*args, transport_hint=transport_hint)
-    except TypeError:
-        print_warning_once(
-            "Mooncake TransferEngine does not accept transport_hint; "
-            "upgrade mooncake-transfer-engine for per-path protocol selection. "
-            f"Ignoring hint {transport_hint!r}."
-        )
-        return fn(*args)
 
 
 class MooncakeTransferEngine:
@@ -236,22 +216,12 @@ class MooncakeTransferEngine:
             raise RuntimeError("Mooncake Transfer Engine initialization failed.")
 
     def transfer_sync(
-        self,
-        session_id: str,
-        buffer: int,
-        peer_buffer_address: int,
-        length: int,
-        transport_hint: str = "",
+        self, session_id: str, buffer: int, peer_buffer_address: int, length: int
     ) -> int:
         """Synchronously transfer data to the specified address."""
         try:
-            ret = _call_with_transport_hint(
-                self.engine.transfer_sync_write,
-                session_id,
-                buffer,
-                peer_buffer_address,
-                length,
-                transport_hint=transport_hint,
+            ret = self.engine.transfer_sync_write(
+                session_id, buffer, peer_buffer_address, length
             )
         except Exception:
             ret = -1
@@ -272,17 +242,11 @@ class MooncakeTransferEngine:
         buffers: List[int],
         peer_buffer_addresses: List[int],
         lengths: List[int],
-        transport_hint: str = "",
     ) -> int:
         """Synchronously transfer data to the specified addresses in batches."""
         try:
-            ret = _call_with_transport_hint(
-                self.engine.batch_transfer_sync_write,
-                session_id,
-                buffers,
-                peer_buffer_addresses,
-                lengths,
-                transport_hint=transport_hint,
+            ret = self.engine.batch_transfer_sync_write(
+                session_id, buffers, peer_buffer_addresses, lengths
             )
         except Exception:
             ret = -1

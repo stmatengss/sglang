@@ -1,8 +1,6 @@
-"""Unit tests for Mooncake PD transfer protocol options."""
+"""Unit tests for unified Mooncake PD transfer protocol selection."""
 
 import os
-from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 from sglang.srt.arg_groups.pd_disaggregation_hook import handle_pd_disaggregation
 from sglang.srt.disaggregation.mooncake.protocol import (
@@ -10,12 +8,8 @@ from sglang.srt.disaggregation.mooncake.protocol import (
     apply_mooncake_protocol,
     is_mooncake_backend,
     parse_mooncake_backend_alias,
-    resolve_path_transport_hint,
+    protocol_clears_ib_device,
     validate_mooncake_protocol,
-)
-from sglang.srt.distributed.device_communicators.mooncake_transfer_engine import (
-    MooncakeTransferEngine,
-    _call_with_transport_hint,
 )
 from sglang.srt.environ import envs
 from sglang.srt.server_args import DISAGG_TRANSFER_BACKEND_CHOICES, ServerArgs
@@ -77,34 +71,12 @@ class TestMooncakeProtocolCatalog(CustomTestCase):
         validate_mooncake_protocol(None, "--disaggregation-mooncake-protocol")
         validate_mooncake_protocol("rdma", "--disaggregation-mooncake-protocol")
 
-
-class TestMooncakePathHints(CustomTestCase):
-    def test_per_path_overrides_global(self):
-        args = SimpleNamespace(
-            disaggregation_mooncake_protocol="rdma",
-            disaggregation_mooncake_kv_protocol="nvlink",
-            disaggregation_mooncake_aux_protocol="tcp",
-            disaggregation_mooncake_state_protocol=None,
-            disaggregation_mooncake_staging_protocol=None,
-        )
-        self.assertEqual(resolve_path_transport_hint(args, "kv"), "nvlink")
-        self.assertEqual(resolve_path_transport_hint(args, "aux"), "tcp")
-        self.assertEqual(resolve_path_transport_hint(args, "state"), "rdma")
-        self.assertEqual(resolve_path_transport_hint(args, "staging"), "rdma")
-
-    def test_empty_when_unset(self):
-        args = SimpleNamespace(
-            disaggregation_mooncake_protocol=None,
-            disaggregation_mooncake_kv_protocol=None,
-            disaggregation_mooncake_aux_protocol=None,
-            disaggregation_mooncake_state_protocol=None,
-            disaggregation_mooncake_staging_protocol=None,
-        )
-        self.assertEqual(resolve_path_transport_hint(args, "kv"), "")
-
-    def test_unknown_path_raises(self):
-        with self.assertRaises(ValueError):
-            resolve_path_transport_hint(SimpleNamespace(), "weights")
+    def test_protocol_clears_ib_device(self):
+        self.assertTrue(protocol_clears_ib_device("tcp"))
+        self.assertTrue(protocol_clears_ib_device("nvlink"))
+        self.assertFalse(protocol_clears_ib_device("rdma"))
+        self.assertFalse(protocol_clears_ib_device("efa"))
+        self.assertFalse(protocol_clears_ib_device(None))
 
 
 class TestApplyMooncakeProtocol(CustomTestCase):
@@ -215,69 +187,17 @@ class TestMooncakePdHook(CustomTestCase):
         self.assertEqual(envs.MOONCAKE_PROTOCOL.get(), "rdma")
         self.assertIsNone(os.environ.get("MC_FORCE_TCP"))
 
-
-class TestMooncakeTransferHintCall(CustomTestCase):
-    def test_passes_transport_hint_kwarg(self):
-        fn = MagicMock(return_value=0)
-        ret = _call_with_transport_hint(
-            fn, "session", [1], [2], [3], transport_hint="tcp"
+    def test_protocol_flag_without_alias(self):
+        server_args = ServerArgs(
+            model_path="dummy",
+            disaggregation_mode="prefill",
+            disaggregation_transfer_backend="mooncake",
+            disaggregation_mooncake_protocol="nvlink",
+            disaggregation_ib_device="mlx5_0",
         )
-        self.assertEqual(ret, 0)
-        fn.assert_called_once_with("session", [1], [2], [3], transport_hint="tcp")
-
-    def test_omits_empty_hint(self):
-        fn = MagicMock(return_value=0)
-        _call_with_transport_hint(fn, "session", [1], [2], [3], transport_hint="")
-        fn.assert_called_once_with("session", [1], [2], [3])
-
-    def test_falls_back_when_kwarg_unsupported(self):
-        fn = MagicMock(side_effect=[TypeError("unexpected kwarg"), 0])
-        ret = _call_with_transport_hint(
-            fn, "session", [1], [2], [3], transport_hint="nvlink"
-        )
-        self.assertEqual(ret, 0)
-        self.assertEqual(fn.call_count, 2)
-        self.assertEqual(fn.call_args_list[1].kwargs, {})
-
-    def test_batch_transfer_sync_forwards_hint(self):
-        engine = MooncakeTransferEngine.__new__(MooncakeTransferEngine)
-        engine.engine = SimpleNamespace(
-            batch_transfer_sync_write=MagicMock(return_value=0)
-        )
-        ret = engine.batch_transfer_sync("sid", [1], [2], [3], transport_hint="efa")
-        self.assertEqual(ret, 0)
-        engine.engine.batch_transfer_sync_write.assert_called_once_with(
-            "sid", [1], [2], [3], transport_hint="efa"
-        )
-
-
-class TestMooncakeAuxZmqFallback(CustomTestCase):
-    def test_aux_tcp_without_tent_uses_zmq(self):
-        from sglang.srt.disaggregation.mooncake.conn import MooncakeKVManager
-
-        manager = MooncakeKVManager.__new__(MooncakeKVManager)
-        manager.server_args = SimpleNamespace(
-            disaggregation_mooncake_protocol="rdma",
-            disaggregation_mooncake_kv_protocol=None,
-            disaggregation_mooncake_aux_protocol="tcp",
-            disaggregation_mooncake_state_protocol=None,
-            disaggregation_mooncake_staging_protocol=None,
-        )
-        manager.enable_custom_mem_pool = False
-        manager.custom_mem_pool_type = None
-        with envs.SGLANG_MOONCAKE_SEND_AUX_TCP.override(False):
-            saved = os.environ.get("MC_USE_TENT")
-            os.environ.pop("MC_USE_TENT", None)
-            try:
-                self.assertTrue(manager._should_send_aux_via_zmq())
-                os.environ["MC_USE_TENT"] = "1"
-                self.assertFalse(manager._should_send_aux_via_zmq())
-                os.environ.pop("MC_USE_TENT", None)
-                manager.server_args.disaggregation_mooncake_protocol = "tcp"
-                manager.server_args.disaggregation_mooncake_aux_protocol = None
-                self.assertFalse(manager._should_send_aux_via_zmq())
-            finally:
-                if saved is None:
-                    os.environ.pop("MC_USE_TENT", None)
-                else:
-                    os.environ["MC_USE_TENT"] = saved
+        handle_pd_disaggregation(server_args)
+        self.assertEqual(server_args.disaggregation_transfer_backend, "mooncake")
+        self.assertEqual(server_args.disaggregation_mooncake_protocol, "nvlink")
+        self.assertEqual(envs.MOONCAKE_PROTOCOL.get(), "nvlink")
+        self.assertIsNone(server_args.disaggregation_ib_device)
+        self.assertEqual(os.environ.get("MC_FORCE_MNNVL"), "1")

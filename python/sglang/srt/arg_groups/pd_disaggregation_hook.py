@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 def _normalize_mooncake_transfer_options(server_args: ServerArgs) -> None:
-    """Resolve mooncake_<protocol> aliases and per-path protocol flags."""
+    """Resolve mooncake_<protocol> aliases into one engine-wide protocol."""
     alias = parse_mooncake_backend_alias(server_args.disaggregation_transfer_backend)
     if alias is not None:
         if server_args.disaggregation_mooncake_protocol is None:
@@ -33,22 +33,6 @@ def _normalize_mooncake_transfer_options(server_args: ServerArgs) -> None:
     validate_mooncake_protocol(
         server_args.disaggregation_mooncake_protocol,
         "--disaggregation-mooncake-protocol",
-    )
-    validate_mooncake_protocol(
-        server_args.disaggregation_mooncake_kv_protocol,
-        "--disaggregation-mooncake-kv-protocol",
-    )
-    validate_mooncake_protocol(
-        server_args.disaggregation_mooncake_aux_protocol,
-        "--disaggregation-mooncake-aux-protocol",
-    )
-    validate_mooncake_protocol(
-        server_args.disaggregation_mooncake_state_protocol,
-        "--disaggregation-mooncake-state-protocol",
-    )
-    validate_mooncake_protocol(
-        server_args.disaggregation_mooncake_staging_protocol,
-        "--disaggregation-mooncake-staging-protocol",
     )
 
     using_mooncake_pd = (

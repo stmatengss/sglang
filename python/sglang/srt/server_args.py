@@ -2504,53 +2504,11 @@ class ServerArgs:
         Optional[str],
         Arg(
             help=(
-                "Engine-wide Mooncake transport for PD KV transfer. Also used as "
-                "the default TENT transport_hint for paths that do not set a "
-                "per-path override. Supported: "
+                "Mooncake transport used by the PD transfer engine for all KV, "
+                "aux, state, and staging transfers. Supported: "
                 + ", ".join(MOONCAKE_TRANSFER_PROTOCOL_CHOICES)
-                + ". Default: MOONCAKE_PROTOCOL env (rdma)."
-            ),
-            choices=list(MOONCAKE_TRANSFER_PROTOCOL_CHOICES),
-        ),
-    ] = None
-    disaggregation_mooncake_kv_protocol: A[
-        Optional[str],
-        Arg(
-            help=(
-                "Mooncake transport for PD KV-cache transfers. Default: "
-                "--disaggregation-mooncake-protocol. Mixed per-path transports "
-                "require Mooncake TENT (MC_USE_TENT=1)."
-            ),
-            choices=list(MOONCAKE_TRANSFER_PROTOCOL_CHOICES),
-        ),
-    ] = None
-    disaggregation_mooncake_aux_protocol: A[
-        Optional[str],
-        Arg(
-            help=(
-                "Mooncake transport for PD auxiliary metadata transfers. "
-                "Default: --disaggregation-mooncake-protocol. 'tcp' uses "
-                "Mooncake TCP under TENT, and ZMQ TCP on the classic engine."
-            ),
-            choices=list(MOONCAKE_TRANSFER_PROTOCOL_CHOICES),
-        ),
-    ] = None
-    disaggregation_mooncake_state_protocol: A[
-        Optional[str],
-        Arg(
-            help=(
-                "Mooncake transport for PD extra-state transfers (Mamba, "
-                "indexer, etc.). Default: --disaggregation-mooncake-protocol."
-            ),
-            choices=list(MOONCAKE_TRANSFER_PROTOCOL_CHOICES),
-        ),
-    ] = None
-    disaggregation_mooncake_staging_protocol: A[
-        Optional[str],
-        Arg(
-            help=(
-                "Mooncake transport for PD staging-buffer bulk transfers. "
-                "Default: --disaggregation-mooncake-protocol."
+                + ". Default: MOONCAKE_PROTOCOL env (rdma). Equivalent to "
+                "--disaggregation-transfer-backend mooncake_<protocol>."
             ),
             choices=list(MOONCAKE_TRANSFER_PROTOCOL_CHOICES),
         ),

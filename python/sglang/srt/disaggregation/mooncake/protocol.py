@@ -11,16 +11,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Mooncake Transfer Engine protocol catalog for PD disaggregation.
+"""Unified Mooncake transport selection for PD disaggregation.
 
-Mooncake supports multiple transports (RDMA, TCP, EFA, NVLink, ...). SGLang
-exposes them as:
-
-* ``--disaggregation-transfer-backend mooncake_<protocol>`` aliases
-  (e.g. ``mooncake_tcp``, ``mooncake_efa``), rewritten to ``mooncake``.
-* ``--disaggregation-mooncake-protocol`` for the engine-wide default.
-* Per-path flags (``--disaggregation-mooncake-kv-protocol``, ``-aux-``,
-  ``-state-``, ``-staging-``) forwarded as TENT ``transport_hint`` values.
+One protocol is applied to the whole PD TransferEngine (KV, aux, state, and
+staging). Select it with ``--disaggregation-mooncake-protocol`` or a
+``mooncake_<protocol>`` backend alias.
 
 See https://kvcache-ai.github.io/Mooncake/getting_started/supported-protocols.html
 """
@@ -36,15 +31,14 @@ from sglang.srt.environ import envs
 
 logger = logging.getLogger(__name__)
 
-# PD transfer paths that can pin a Mooncake transport independently.
-MOONCAKE_TRANSFER_PATHS: Tuple[str, ...] = ("kv", "aux", "state", "staging")
-
-PATH_PROTOCOL_ATTR = {
-    "kv": "disaggregation_mooncake_kv_protocol",
-    "aux": "disaggregation_mooncake_aux_protocol",
-    "state": "disaggregation_mooncake_state_protocol",
-    "staging": "disaggregation_mooncake_staging_protocol",
-}
+# Force-flags owned by protocol specs. Cleared when applying a protocol that
+# does not set them, so a previous alias (e.g. mooncake_tcp) cannot stick.
+_OWNED_FORCE_ENV: Tuple[str, ...] = (
+    "MC_FORCE_TCP",
+    "MC_FORCE_MNNVL",
+    "MC_INTRANODE_NVLINK",
+    "MC_FORCE_MUSA",
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -52,15 +46,10 @@ class MooncakeProtocolSpec:
     """How to select one Mooncake transport from SGLang."""
 
     name: str
-    # Value passed to TransferEngine.initialize() / MOONCAKE_PROTOCOL.
     mooncake_protocol: str
-    # Extra Mooncake/SGLang env vars required to actually install this transport.
     extra_env: Dict[str, str] = dataclasses.field(default_factory=dict)
-    # Transports that do not use an IB/RDMA HCA.
     clear_ib_device: bool = False
-    # Optional SGLANG_MOONCAKE_CUSTOM_MEM_POOL value (set only if unset).
     custom_mem_pool: Optional[str] = None
-    # Enable the Ascend+Mooncake integration path.
     ascend: bool = False
 
 
@@ -170,23 +159,8 @@ def validate_mooncake_protocol(protocol: Optional[str], flag: str) -> None:
         )
 
 
-# Force-flags owned by protocol specs. Cleared when applying a protocol that
-# does not set them, so a previous alias (e.g. mooncake_tcp) cannot stick.
-_OWNED_FORCE_ENV: Tuple[str, ...] = (
-    "MC_FORCE_TCP",
-    "MC_FORCE_MNNVL",
-    "MC_INTRANODE_NVLINK",
-    "MC_FORCE_MUSA",
-)
-
-
 def apply_mooncake_protocol(protocol: str) -> MooncakeProtocolSpec:
-    """Install env vars so TransferEngine.initialize() selects ``protocol``.
-
-    CLI/alias selection wins over previously inherited values for the keys this
-    spec owns. ``SGLANG_MOONCAKE_CUSTOM_MEM_POOL`` is set only when unset, so an
-    explicit user override is preserved.
-    """
+    """Install env vars so TransferEngine.initialize() selects ``protocol``."""
     spec = get_mooncake_protocol_spec(protocol)
     envs.MOONCAKE_PROTOCOL.set(spec.mooncake_protocol)
     for key in _OWNED_FORCE_ENV:
@@ -212,22 +186,3 @@ def protocol_clears_ib_device(protocol: Optional[str]) -> bool:
         return False
     spec = MOONCAKE_PROTOCOL_SPECS.get(protocol)
     return bool(spec and spec.clear_ib_device)
-
-
-def resolve_path_transport_hint(server_args, path: str) -> str:
-    """Return the TENT ``transport_hint`` for a PD transfer path.
-
-    Per-path flag wins; otherwise the engine-wide
-    ``--disaggregation-mooncake-protocol`` is used. An empty string leaves
-    selection to Mooncake policy / the initialized protocol.
-    """
-    if path not in PATH_PROTOCOL_ATTR:
-        raise ValueError(
-            f"Unknown Mooncake PD transfer path {path!r}. "
-            f"Supported: {list(MOONCAKE_TRANSFER_PATHS)}"
-        )
-    per_path = getattr(server_args, PATH_PROTOCOL_ATTR[path], None)
-    if per_path:
-        return per_path
-    global_protocol = getattr(server_args, "disaggregation_mooncake_protocol", None)
-    return global_protocol or ""
