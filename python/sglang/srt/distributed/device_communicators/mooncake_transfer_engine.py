@@ -5,6 +5,10 @@ import logging
 import os
 from typing import TYPE_CHECKING, Dict, List, Optional, Union
 
+from sglang.srt.disaggregation.mooncake.protocol import (
+    is_mooncake_backend,
+    protocol_clears_ib_device,
+)
 from sglang.srt.environ import envs
 from sglang.srt.utils.network import NetworkAddress, get_free_port, get_local_ip_auto
 
@@ -122,9 +126,8 @@ class MooncakeTransferEngine:
         self.engine = TransferEngine()
         self.hostname = hostname
         self.gpu_id = gpu_id if gpu_id is not None else 0
-        # MC_FORCE_TCP=1 makes mooncake install TcpTransport instead of RDMA,
-        # in which case RDMA HCA selection is irrelevant; pass empty device.
-        if os.environ.get("MC_FORCE_TCP") == "1":
+        # TCP / NVLink / HIP / ... do not use an RDMA HCA; pass empty device.
+        if protocol_clears_ib_device(envs.MOONCAKE_PROTOCOL.get()):
             self.ib_device = ""
         else:
             self.ib_device = get_ib_devices_for_gpu(ib_device, self.gpu_id)
@@ -314,7 +317,7 @@ def maybe_init_shared_mooncake_transfer_engine(
     use_mooncake_te = (
         (
             server_args.disaggregation_mode != "null"
-            and server_args.disaggregation_transfer_backend == "mooncake"
+            and is_mooncake_backend(server_args.disaggregation_transfer_backend)
         )
         or (
             server_args.enable_hierarchical_cache

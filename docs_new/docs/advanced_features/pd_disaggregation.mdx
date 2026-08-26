@@ -36,6 +36,27 @@ For deploying PD disaggregation at scale with load balancing and fault tolerance
 uv pip install mooncake-transfer-engine
 ```
 
+### Transfer protocols
+
+Mooncake Transfer Engine supports multiple transports. SGLang applies **one protocol to the whole PD engine** (KV cache, auxiliary metadata, extra state, and staging). Select it with `--disaggregation-mooncake-protocol` or a `mooncake_<protocol>` backend alias.
+
+Supported protocols: `rdma`, `tcp`, `efa`, `nvlink`, `nvlink_intra`, `hip`, `barex`, `ascend`, `musa`, `cxl`, `nvmeof`, `tpu`, `mpcomm`.
+
+```bash
+# Engine-wide TCP (equivalent to the mooncake_tcp alias)
+python -m sglang.launch_server ... \
+  --disaggregation-mode prefill \
+  --disaggregation-transfer-backend mooncake \
+  --disaggregation-mooncake-protocol tcp
+
+# Same selection via backend alias
+python -m sglang.launch_server ... \
+  --disaggregation-mode prefill \
+  --disaggregation-transfer-backend mooncake_efa
+```
+
+`--disaggregation-mooncake-protocol` sets `MOONCAKE_PROTOCOL` (default `rdma`) before TransferEngine initialization. An explicit `--disaggregation-mooncake-protocol` wins over a `mooncake_<protocol>` alias. `mooncake_tcp` remains a supported alias and still forces TCP without RDMA HCA selection.
+
 ### IB Device Configuration
 
 `--disaggregation-ib-device` supports the following formats when using the Mooncake backend:
