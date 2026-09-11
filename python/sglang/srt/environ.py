@@ -1404,7 +1404,8 @@ class Envs:
     # of the DeepGEMM dense fp4 logits kernel (test oracle / fallback).
     SGLANG_DSV41_TORCH_PREFILL_INDEXER = EnvBool(False)
     # Keep the DeepSeek-V4.1 engram tables in host memory (layout below) and gather
-    # rows from the GPU instead of sharding them over HBM.
+    # rows from the GPU instead of sharding them over HBM. Prefer the CLI flag
+    # --enable-dsv41-engram-host-table; this env still wins when it is set.
     SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE = EnvBool(False)
     # Overlap layer 14's shared-host lookup and WKV with earlier layers at BS=1.
     SGLANG_ENABLE_DSV41_ENGRAM_KV_PREFETCH = EnvBool(False)
@@ -1416,6 +1417,7 @@ class Envs:
     # row range, gathered with the all-reduce. "auto" picks shared when shmem THP
     # (transparent_hugepage/shmem_enabled) is on, else private when anonymous THP
     # is on, else shared without huge pages.
+    # Prefer --dsv41-engram-host-table-layout; this env still wins when it is set.
     SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT = EnvStr("auto")
     # With the host table on, drop the checkpoint's page cache (posix_fadvise
     # DONTNEED on the safetensors) before pre-faulting the table and again after

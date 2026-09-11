@@ -3118,6 +3118,35 @@ class ServerArgs:
         int, "Steps to prefetch in offloading.", NS("exec.offload")
     ] = 1
     offload_mode: A[str, "Mode of offloading.", NS("exec.offload")] = "cpu"
+    enable_dsv41_engram_host_table: A[
+        bool,
+        Arg(
+            help=(
+                "Keep DeepSeek-V4.1 Engram hash tables in host memory and gather "
+                "rows from the GPU over the CPU link instead of sharding them in "
+                "HBM. Use this when the tables do not fit in GPU memory. The env "
+                "var SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE still wins when set."
+            ),
+        ),
+        NS("exec.offload"),
+    ] = False
+    dsv41_engram_host_table_layout: A[
+        str,
+        Arg(
+            help=(
+                "Host-memory layout for DeepSeek-V4.1 Engram tables when "
+                "--enable-dsv41-engram-host-table is set. 'shared' is one memfd "
+                "copy for the TP group (no all-reduce). 'private' is one "
+                "anonymous mapping per rank holding its row range, gathered with "
+                "the all-reduce. 'auto' picks shared when shmem THP is on, else "
+                "private when anonymous THP is on, else shared without huge "
+                "pages. The env var SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT still "
+                "wins when set."
+            ),
+            choices=["auto", "shared", "private"],
+        ),
+        NS("exec.offload"),
+    ] = "auto"
 
     # -------------------------------------------------------------------------
     # LMCache

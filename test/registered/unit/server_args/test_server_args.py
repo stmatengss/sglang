@@ -180,6 +180,31 @@ class TestPrepareServerArgs(CustomTestCase):
         with self.assertRaises(SystemExit):
             parser.parse_args(base_args + ["--dsv4-prefill-backend", "flashmla_kv"])
 
+    def test_dsv41_engram_host_table_cli(self):
+        parser = server_args_module.argparse.ArgumentParser()
+        ServerArgs.add_cli_args(parser)
+        base_args = ["--model-path", "dummy-model"]
+
+        default_args = parser.parse_args(base_args)
+        self.assertFalse(default_args.enable_dsv41_engram_host_table)
+        self.assertEqual(default_args.dsv41_engram_host_table_layout, "auto")
+
+        enabled = parser.parse_args(
+            base_args
+            + [
+                "--enable-dsv41-engram-host-table",
+                "--dsv41-engram-host-table-layout",
+                "shared",
+            ]
+        )
+        self.assertTrue(enabled.enable_dsv41_engram_host_table)
+        self.assertEqual(enabled.dsv41_engram_host_table_layout, "shared")
+
+        with self.assertRaises(SystemExit):
+            parser.parse_args(
+                base_args + ["--dsv41-engram-host-table-layout", "hbm"]
+            )
+
     def test_return_hidden_states_mode_configuration(self):
         def _resolved(**kwargs):
             server_args = ServerArgs(**kwargs)
