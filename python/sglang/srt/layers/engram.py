@@ -47,7 +47,7 @@ from sglang.srt.layers.linear import ReplicatedLinear
 from sglang.srt.layers.quantization.base_config import QuantizationConfig
 from sglang.srt.managers.schedule_batch import MM_PAD_SHIFT_VALUE
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch
-from sglang.srt.runtime_context import get_model, get_parallel, get_serving
+from sglang.srt.runtime_context import get_exec, get_model, get_parallel, get_serving
 from sglang.srt.utils import add_prefix
 from sglang.srt.utils.hf_transformers.tokenizer import get_tokenizer
 
@@ -528,6 +528,35 @@ def _drop_page_cache_once(reason: str) -> None:
     )
 
 
+def engram_host_table_enabled() -> bool:
+    """True when DeepSeek-V4.1 Engram tables should live in host memory.
+
+    ``--enable-dsv41-engram-host-table`` is the user-facing switch. The env var
+    ``SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE`` still wins when it is set, so
+    existing launches keep working.
+    """
+    if envs.SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE.is_set():
+        return bool(envs.SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE.get())
+    try:
+        return bool(get_exec().offload.enable_dsv41_engram_host_table)
+    except (ValueError, AttributeError):
+        return False
+
+
+def engram_host_table_layout() -> str:
+    """Host-table layout: auto, shared, or private.
+
+    ``--dsv41-engram-host-table-layout`` is the user-facing switch. The env var
+    ``SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT`` still wins when it is set.
+    """
+    if envs.SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT.is_set():
+        return str(envs.SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT.get())
+    try:
+        return str(get_exec().offload.dsv41_engram_host_table_layout)
+    except (ValueError, AttributeError):
+        return "auto"
+
+
 class _HostTable:
     """Host-memory backing for one engram table.
 
@@ -584,13 +613,23 @@ class _HostTable:
 
     @staticmethod
     def choose_layout(requested: str) -> str:
-        if requested != "auto":
-            return requested
-        if _thp_mode("shmem_enabled") in ("advise", "always", "within_size", "force"):
+        if requested == "auto":
+            if _thp_mode("shmem_enabled") in (
+                "advise",
+                "always",
+                "within_size",
+                "force",
+            ):
+                return "shared"
+            if _thp_mode("enabled") in ("madvise", "always"):
+                return "private"
             return "shared"
-        if _thp_mode("enabled") in ("madvise", "always"):
-            return "private"
-        return "shared"
+        if requested in ("shared", "private"):
+            return requested
+        raise ValueError(
+            "engram host table layout must be auto, shared, or private; "
+            f"got {requested!r}"
+        )
 
     def _open_shared_fd(self, nbytes: int, name: str) -> int:
         owner = None
@@ -671,9 +710,10 @@ class EngramEmbedding(nn.Module):
 
     Default: rows sharded over the TP group in device memory; each rank gathers
     the rows it owns, zeroes the rest and the all-reduce reassembles the lookup.
-    With SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE the table lives in host memory and
-    the GPU gathers rows over the CPU link -- either one shared copy with no
-    all-reduce, or one private shard per rank (see _HostTable). Loading is
+    With ``--enable-dsv41-engram-host-table`` (or
+    ``SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE``) the table lives in host memory
+    and the GPU gathers rows over the CPU link -- either one shared copy with
+    no all-reduce, or one private shard per rank (see _HostTable). Loading is
     sharded in every layout: a rank writes only its own row range.
     """
 
@@ -686,7 +726,7 @@ class EngramEmbedding(nn.Module):
         row_end = num_embeddings * (tp_rank + 1) // self.tp_size
         self.rows = row_end - self.row_start
         self.host_table: Optional[_HostTable] = None
-        if envs.SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE.get():
+        if engram_host_table_enabled():
             self._init_host_table(num_embeddings, dim, layer_id)
         else:
             self.weight = nn.Parameter(
@@ -703,9 +743,7 @@ class EngramEmbedding(nn.Module):
         self.scale.weight_loader = self._load_rows
 
     def _init_host_table(self, num_embeddings: int, dim: int, layer_id: int):
-        layout = _HostTable.choose_layout(
-            envs.SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT.get()
-        )
+        layout = _HostTable.choose_layout(engram_host_table_layout())
         n = num_embeddings if layout == "shared" else self.rows
         w_bytes = n * dim
         s_bytes = n * (dim // FP8_BLOCK_SIZE)
@@ -721,6 +759,19 @@ class EngramEmbedding(nn.Module):
         scale = raw[w_bytes:].view(torch.float8_e8m0fnu).view(n, dim // FP8_BLOCK_SIZE)
         self.weight = nn.Parameter(weight, requires_grad=False)
         self.scale = nn.Parameter(scale, requires_grad=False)
+        logger.info(
+            "engram layer %s: host table layout=%s, %s rows x %s dim",
+            layer_id,
+            layout,
+            n,
+            dim,
+        )
+
+    def _apply(self, fn, *args, **kwargs):
+        """Keep mmap-backed host tables on CPU when the rest of the model moves."""
+        if self.host_table is not None:
+            return self
+        return super()._apply(fn, *args, **kwargs)
 
     @property
     def _shared(self) -> bool:

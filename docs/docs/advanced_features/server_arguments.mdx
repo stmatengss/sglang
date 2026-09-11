@@ -2337,6 +2337,18 @@ Please consult the documentation below and [server_args.py](https://github.com/s
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>`cpu`</td>
       <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>Type: str</td>
     </tr>
+        <tr>
+      <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}>`--enable-dsv41-engram-host-table`</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>Keep DeepSeek-V4.1 Engram hash tables in host memory and gather rows from the GPU over the CPU link instead of sharding them in HBM. Use this when the tables do not fit in GPU memory. The env var SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE still wins when set.</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>`False`</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>bool flag (set to enable)</td>
+    </tr>
+        <tr>
+      <td style={{padding: "9px 12px", fontWeight: 500, backgroundColor: "rgba(255,255,255,0.02)"}}>`--dsv41-engram-host-table-layout`</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}>Host-memory layout for DeepSeek-V4.1 Engram tables when --enable-dsv41-engram-host-table is set. 'shared' is one memfd copy for the TP group (no all-reduce). 'private' is one anonymous mapping per rank holding its row range, gathered with the all-reduce. 'auto' picks shared when shmem THP is on, else private when anonymous THP is on, else shared without huge pages. The env var SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT still wins when set.</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.02)"}}>`auto`</td>
+      <td style={{padding: "9px 12px", backgroundColor: "rgba(255,255,255,0.05)"}}><code>auto</code>, <code>shared</code>, <code>private</code></td>
+    </tr>
   </tbody>
 </table>
 

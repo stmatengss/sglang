@@ -734,3 +734,23 @@ Pending update...
 ```
 
 </Accordion>
+
+### 3.6 Engram host table (DeepSeek-V4.1)
+
+DeepSeek-V4.1 adds Engram: gated n-gram hash memory whose embedding tables are large and only sparsely read. By default SGLang shards those tables across the tensor-parallel group in GPU memory. On memory-tight deployments you can keep them in host DRAM instead and gather the requested rows from the GPU over the CPU link:
+
+```bash Command
+sglang serve \
+  --trust-remote-code \
+  --model-path <deepseek-v4.1-checkpoint> \
+  --enable-dsv41-engram-host-table \
+  --dsv41-engram-host-table-layout auto
+```
+
+`--dsv41-engram-host-table-layout` controls how the host mapping is shared:
+
+- `shared` — one memfd copy for the TP group. Every rank looks up the full table, so there is no all-reduce. Huge pages need `transparent_hugepage/shmem_enabled`.
+- `private` — one anonymous mapping per rank holding only that rank's rows. The existing sharded all-reduce reassembles the lookup. Huge pages come from `transparent_hugepage/enabled`.
+- `auto` (default) — `shared` when shmem THP is on, else `private` when anonymous THP is on, else `shared` without huge pages.
+
+The GPU never holds the table. Pinning is on by default (`SGLANG_DSV41_ENGRAM_HOST_TABLE_PIN=1`) so discrete GPUs can gather through UVA; set it to `0` on Grace-Blackwell where ATS reaches the plain mapping. The older env var `SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE=1` still enables the same path when the CLI flag is omitted.

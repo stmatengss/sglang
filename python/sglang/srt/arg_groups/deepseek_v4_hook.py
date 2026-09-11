@@ -233,6 +233,10 @@ def validate_deepseek_v41_features(server_args: ServerArgs) -> None:
             raise ValueError(
                 "--enable-encoder-swa-bounded-replay requires DeepSeek-V4.1"
             )
+        if cfg.enable_dsv41_engram_host_table:
+            raise ValueError(
+                "--enable-dsv41-engram-host-table requires DeepSeek-V4.1"
+            )
         return
     if cfg.enable_encoder_swa_bounded_replay:
         from sglang.srt.model_executor.cuda_graph_config import Backend

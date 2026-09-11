@@ -19,7 +19,7 @@ from sglang.srt.runtime_context import get_parallel
 from sglang.test.ci.ci_register import register_cuda_ci
 from sglang.test.test_utils import CustomTestCase
 
-register_cuda_ci(est_time=60, stage="base-b", runner_config="2-gpu-large")
+register_cuda_ci(est_time=180, stage="base-b", runner_config="2-gpu-large")
 
 ROWS = 2048
 DIM = 256
@@ -71,12 +71,13 @@ def _reference(weight, scale, ids):
     return (rows * scale[ids].float().unsqueeze(-1)).flatten(-2).to(torch.bfloat16)
 
 
-def _build(rows: int):
+def _build(rows: int, *, host: bool = False):
     from sglang.srt.layers.engram import EngramEmbedding
 
+    device = torch.device("cpu") if host else torch.device("cuda")
     with (
-        envs.SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE.override(False),
-        torch.device("cuda"),
+        envs.SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE.override(host),
+        torch.device(device),
     ):
         return EngramEmbedding(rows, DIM, layer_id=1)
 
@@ -87,24 +88,37 @@ def _load(embed, weight, scale) -> None:
     embed.finish_load()
 
 
-def _tp_worker(rank: int, world: int, port: int) -> None:
+def _tp_worker(
+    rank: int,
+    world: int,
+    port: int,
+    host: bool = False,
+    layout: str = "private",
+) -> None:
     torch.cuda.set_device(rank)
     _init(rank, world, port, "nccl")
     try:
         for rows in (2049, 2048, 1):
             weight, scale = _checkpoint_table(rows=rows)
             with (
+                envs.SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE.override(host),
+                envs.SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT.override(layout),
+                envs.SGLANG_ENABLE_DSV41_ENGRAM_DROP_PAGE_CACHE.override(False),
                 get_parallel().override(tp_size=world, tp_rank=rank),
                 patch("sglang.srt.layers.engram.get_attention_dp_size", return_value=1),
             ):
-                embed = _build(rows)
+                embed = _build(rows, host=host)
                 # Each rank loads its own range, including uneven or empty shards.
                 _load(embed, weight, scale)
+                if host:
+                    assert embed.weight.device.type == "cpu", embed.weight.device
+                    assert embed.scale.device.type == "cpu", embed.scale.device
                 ids = torch.arange(rows, device="cuda", dtype=torch.int64).view(-1, 1)
                 out = embed(ids)
             torch.cuda.synchronize()
             assert torch.equal(out.cpu(), _reference(weight, scale, ids)), (
-                f"rank {rank}, rows {rows}: incorrect lookup"
+                f"rank {rank}, rows {rows}, host={host}, layout={layout}: "
+                "incorrect lookup"
             )
             assert out[0, 0, 0].item() == 2**-127, "zero exponent was decoded as zero"
             torch.distributed.barrier()
@@ -118,6 +132,30 @@ class TestEngramDeviceTable(CustomTestCase):
         if world < 2:
             self.skipTest("needs two GPUs to run two TP ranks")
         mp.spawn(_tp_worker, args=(world, _free_port()), nprocs=world, join=True)
+
+
+class TestEngramHostTableTp(CustomTestCase):
+    def test_private_host_lookup_matches_checkpoint(self):
+        world = min(2, torch.cuda.device_count())
+        if world < 2:
+            self.skipTest("needs two GPUs to run two TP ranks")
+        mp.spawn(
+            _tp_worker,
+            args=(world, _free_port(), True, "private"),
+            nprocs=world,
+            join=True,
+        )
+
+    def test_shared_host_lookup_matches_checkpoint(self):
+        world = min(2, torch.cuda.device_count())
+        if world < 2:
+            self.skipTest("needs two GPUs to run two TP ranks")
+        mp.spawn(
+            _tp_worker,
+            args=(world, _free_port(), True, "shared"),
+            nprocs=world,
+            join=True,
+        )
 
 
 if __name__ == "__main__":
