@@ -1,11 +1,4 @@
-"""Config fields of the ``lora`` namespace.
-
-One class per namespace. The class *is* the namespace: a field declared here
-lands in the ``lora`` bag, which is what ``get_lora()`` returns, so a reader
-spells it exactly as before. ``ServerArgs`` composes these classes, so the
-record stays one flat object -- the split moves where declarations live, not
-how config is shaped at runtime.
-"""
+"""Config fields of the ``lora`` namespace."""
 
 from __future__ import annotations
 
@@ -72,7 +65,7 @@ class Lora(msgspec.Struct):
     ] = None
     max_loras_per_batch: A[
         int,
-        "Maximum number of adapters for a running batch, include base-only request.",
+        "GPU pool capacity in distinct adapter IDs, including None for base-model requests. With pipeline parallelism, shared across all in-flight microbatches.",
     ] = 8
     lora_eviction_policy: A[
         str,
@@ -85,7 +78,7 @@ class Lora(msgspec.Struct):
         str,
         Arg(
             help="Choose the kernel backend for multi-LoRA serving.",
-            choices=["triton", "csgmv", "ascend", "torch_native"],
+            choices=["triton", "csgmv", "ascend", "torch_native", "triton_v2"],
         ),
     ] = "csgmv"
     max_lora_chunk_size: A[
